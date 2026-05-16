@@ -608,13 +608,13 @@
         </div>
         <div class="slider-row">
           <span class="slider-label">Speed</span>
-          <input type="range" id="rateSlider" min="0.5" max="2" step="0.1" value="1">
+          <input type="range" id="rateSlider" min="0.7" max="1.3" step="0.05" value="1">
           <span class="slider-val" id="rateVal">1.0×</span>
         </div>
         <div class="slider-row">
-          <span class="slider-label">Pitch</span>
-          <input type="range" id="pitchSlider" min="0.5" max="2" step="0.1" value="1">
-          <span class="slider-val" id="pitchVal">1.0</span>
+          <span class="slider-label">Style</span>
+          <input type="range" id="pitchSlider" min="0" max="1" step="0.05" value="0.5">
+          <span class="slider-val" id="pitchVal">0.50</span>
         </div>
       </div>
 
@@ -703,6 +703,17 @@
             <button class="api-save-btn" id="groqKeySave">Save</button>
           </div>
           <div class="api-key-hint">Free key at <strong>console.groq.com</strong> → API Keys</div>
+        </div>
+      </div>
+
+      <div class="lbl" style="margin-bottom:8px;margin-top:16px">ElevenLabs API Key (Playback)</div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="s-row api-key-row">
+          <div class="api-key-wrap">
+            <input type="password" class="api-key-input" id="elevenKeyInput" placeholder="Paste your ElevenLabs key">
+            <button class="api-save-btn" id="elevenKeySave">Save</button>
+          </div>
+          <div class="api-key-hint">Free key at <strong>elevenlabs.io</strong> → Profile → API Key</div>
         </div>
       </div>
 
@@ -1072,8 +1083,9 @@ clearBtn.addEventListener('click', () => {
   finalText = ''; tBody.innerHTML = ''; updateWC(); setStatus('Tap mic to start', ''); toast('Cleared');
 });
 
-// ── TEXT TO SPEECH ─────────────────────────────────────────────
-let voices=[], selVoice=0, utter=null, speaking=false, paused=false, totalChars=1, charIdx=0;
+// ── TEXT TO SPEECH (ElevenLabs) ────────────────────────────────
+let elVoices = [], selVoiceId = '', audioEl = null;
+let speaking = false, paused = false;
 
 const playTextEl  = document.getElementById('playText');
 const playBtn     = document.getElementById('playBtn');
@@ -1091,101 +1103,123 @@ function gradRange(s) {
   const pct = (s.value - s.min) / (s.max - s.min) * 100;
   s.style.background = `linear-gradient(to right,var(--blue) 0%,var(--blue) ${pct}%,var(--border2) ${pct}%,var(--border2) 100%)`;
 }
-rateSlider.addEventListener('input',  e=>{ gradRange(e.target); rateValEl.textContent=(+e.target.value).toFixed(1)+'×'; });
-pitchSlider.addEventListener('input', e=>{ gradRange(e.target); pitchValEl.textContent=(+e.target.value).toFixed(1); });
+rateSlider.addEventListener('input',  e=>{ gradRange(e.target); rateValEl.textContent=(+e.target.value).toFixed(2)+'×'; });
+pitchSlider.addEventListener('input', e=>{ gradRange(e.target); pitchValEl.textContent=(+e.target.value).toFixed(2); });
 gradRange(rateSlider); gradRange(pitchSlider);
 
-const langVoiceMap = { en:'en', hi:'hi', es:'es', fr:'fr', de:'de', it:'it', ja:'ja', zh:'zh', ko:'ko', pt:'pt' };
-
-function initVoices() {
-  const all = speechSynthesis.getVoices();
-  if (!all.length) { speechSynthesis.onvoiceschanged = initVoices; return; }
-
-  const speakLangEl = document.getElementById('speakLang');
-  const langCode    = speakLangEl ? langVoiceMap[speakLangEl.value] || 'en' : 'en';
-
-  let filtered = all.filter(v => v.lang.toLowerCase().startsWith(langCode) && !v.name.toLowerCase().includes('microsoft'));
-  if (!filtered.length) filtered = all.filter(v => v.lang.toLowerCase().startsWith(langCode));
-  if (!filtered.length) filtered = all.filter(v => !v.name.toLowerCase().includes('microsoft'));
-  if (!filtered.length) filtered = all;
-  voices   = filtered.slice(0, 4);
-  selVoice = 0;
-
-  voiceGrid.innerHTML = voices.map((v,i) =>
-    `<div class="voice-chip ${i===0?'active':''}" data-idx="${i}">${v.name.split(' ').slice(0,3).join(' ')}</div>`
-  ).join('') || `<div style="color:var(--muted);font-size:13px">No native voice — using default</div>`;
-
-  voiceGrid.querySelectorAll('.voice-chip').forEach(c=>{
-    c.addEventListener('click',()=>{
-      voiceGrid.querySelectorAll('.voice-chip').forEach(x=>x.classList.remove('active'));
-      c.classList.add('active'); selVoice = +c.dataset.idx;
+async function initVoices() {
+  const apiKey = localStorage.getItem('aura_elevenKey');
+  if (!apiKey) {
+    voiceGrid.innerHTML = `<div style="color:var(--dim);font-size:12px;grid-column:span 2;padding:4px 0">Add ElevenLabs key in ⚙️ Settings to unlock AI voices</div>`;
+    return;
+  }
+  voiceGrid.innerHTML = `<div style="color:var(--dim);font-size:12px;grid-column:span 2;padding:4px 0">Loading voices…</div>`;
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': apiKey }
     });
-  });
+    if (!res.ok) throw new Error('Invalid API key');
+    const data = await res.json();
+    elVoices = data.voices.slice(0, 8);
+    selVoiceId = elVoices[0]?.voice_id || '';
+
+    voiceGrid.innerHTML = elVoices.map((v, i) =>
+      `<div class="voice-chip ${i===0?'active':''}" data-vid="${v.voice_id}">${v.name}</div>`
+    ).join('');
+
+    voiceGrid.querySelectorAll('.voice-chip').forEach(c => {
+      c.addEventListener('click', () => {
+        voiceGrid.querySelectorAll('.voice-chip').forEach(x => x.classList.remove('active'));
+        c.classList.add('active');
+        selVoiceId = c.dataset.vid;
+      });
+    });
+  } catch(err) {
+    voiceGrid.innerHTML = `<div style="color:var(--red);font-size:12px;grid-column:span 2">⚠️ ${err.message}</div>`;
+  }
 }
-if (speechSynthesis.getVoices().length) initVoices();
-else speechSynthesis.onvoiceschanged = initVoices;
 
-document.addEventListener('change', e=>{ if (e.target.id === 'speakLang') initVoices(); });
+async function elevenSpeak(text) {
+  const apiKey = localStorage.getItem('aura_elevenKey');
+  if (!apiKey) { toast('⚙️ Add ElevenLabs key in Settings'); return; }
+  if (!selVoiceId) { await initVoices(); if (!selVoiceId) return; }
 
-// iOS TTS keep-alive: iOS kills speechSynthesis after ~15s; this restarts it
-let ttsKeepAlive = null;
-function startTTSKeepAlive() {
-  ttsKeepAlive = setInterval(() => {
-    if (speaking && !paused) {
-      speechSynthesis.pause();
-      speechSynthesis.resume();
+  setPlayUI('loading');
+  progLabel.textContent = 'Generating audio…';
+  progFill.style.width = '0%';
+
+  const speed     = +rateSlider.value;
+  const stability = +pitchSlider.value;
+
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${selVoiceId}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability, similarity_boost: 0.75, speed }
+      })
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j.detail?.message || j.detail || msg; } catch {}
+      throw new Error(msg);
     }
-  }, 10000);
-}
-function stopTTSKeepAlive() {
-  clearInterval(ttsKeepAlive);
-  ttsKeepAlive = null;
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+
+    if (audioEl) { audioEl.pause(); audioEl = null; }
+    audioEl = new Audio(url);
+
+    audioEl.ontimeupdate = () => {
+      if (audioEl.duration) {
+        const pct = Math.round(audioEl.currentTime / audioEl.duration * 100);
+        progFill.style.width = pct + '%';
+        progLabel.textContent = 'Speaking… ' + pct + '%';
+      }
+    };
+    audioEl.onended = () => {
+      setPlayUI('idle'); progFill.style.width = '100%';
+      progLabel.textContent = 'Done ✓';
+      URL.revokeObjectURL(url);
+    };
+    audioEl.onerror = () => { setPlayUI('idle'); progLabel.textContent = 'Playback error'; };
+
+    await audioEl.play();
+    speaking = true; paused = false;
+    setPlayUI('playing');
+  } catch(err) {
+    setPlayUI('idle'); progLabel.textContent = 'Error';
+    toast('⚠️ ' + err.message.slice(0, 80));
+  }
 }
 
-playBtn.addEventListener('click',()=>{
+playBtn.addEventListener('click', async () => {
   const txt = playTextEl.value.trim();
   if (!txt) { toast('Enter some text first'); return; }
-  if (paused && utter) { speechSynthesis.resume(); paused=false; setPlayUI('playing'); return; }
-  speechSynthesis.cancel();
-  utter = new SpeechSynthesisUtterance(txt);
-  utter.rate  = +rateSlider.value;
-  utter.pitch = +pitchSlider.value;
-  const speakLangEl = document.getElementById('speakLang');
-  const langMap = { en:'en-US', hi:'hi-IN', es:'es-ES', fr:'fr-FR', de:'de-DE', it:'it-IT', ja:'ja-JP', zh:'zh-CN', ko:'ko-KR', pt:'pt-BR' };
-  utter.lang = langMap[speakLangEl?.value] || 'en-US';
-  if (voices[selVoice]) utter.voice = voices[selVoice];
-  totalChars = txt.length; charIdx = 0;
-  utter.onboundary = e=>{ if(e.name==='word'){ charIdx=e.charIndex; updateProg(); } };
-  utter.onend  = ()=>{ stopTTSKeepAlive(); stopPlay(); progFill.style.width='100%'; progLabel.textContent='Done ✓'; };
-  utter.onerror = ()=>{ stopTTSKeepAlive(); stopPlay(); progLabel.textContent='Error'; };
-  speechSynthesis.speak(utter);
-  speaking=true; paused=false;
-  setPlayUI('playing');
-  startTTSKeepAlive();
+  if (paused && audioEl) { audioEl.play(); paused = false; setPlayUI('playing'); return; }
+  await elevenSpeak(txt);
 });
-pauseBtn.addEventListener('click',()=>{
-  if (speaking && !paused) { speechSynthesis.pause(); paused=true; setPlayUI('paused'); }
-  else if (paused)         { speechSynthesis.resume(); paused=false; setPlayUI('playing'); }
+pauseBtn.addEventListener('click', () => {
+  if (!audioEl) return;
+  if (!paused) { audioEl.pause(); paused = true; setPlayUI('paused'); }
+  else         { audioEl.play();  paused = false; setPlayUI('playing'); }
 });
-stopPlayBtn.addEventListener('click',()=>{
-  speechSynthesis.cancel(); stopTTSKeepAlive(); stopPlay();
-  progFill.style.width='0%'; progLabel.textContent='Stopped';
+stopPlayBtn.addEventListener('click', () => {
+  if (audioEl) { audioEl.pause(); audioEl.currentTime = 0; }
+  setPlayUI('idle'); progFill.style.width = '0%'; progLabel.textContent = 'Stopped';
 });
 
-function stopPlay() { speaking=false; paused=false; utter=null; setPlayUI('idle'); }
 function setPlayUI(s) {
-  playBtn.disabled     = s==='playing';
-  pauseBtn.disabled    = s==='idle';
-  stopPlayBtn.disabled = s==='idle';
-  pauseBtn.textContent = s==='paused' ? '▶ Resume' : '⏸ Pause';
-  if (s==='playing') progLabel.textContent = 'Speaking…';
-  if (s==='paused')  progLabel.textContent = 'Paused';
-  if (s==='idle')    progLabel.textContent = 'Not playing';
-}
-function updateProg() {
-  const pct = Math.min(100, Math.round(charIdx / totalChars * 100));
-  progFill.style.width = pct+'%';
-  progLabel.textContent = 'Speaking… '+pct+'%';
+  playBtn.disabled     = s === 'playing' || s === 'loading';
+  pauseBtn.disabled    = s === 'idle'    || s === 'loading';
+  stopPlayBtn.disabled = s === 'idle'    || s === 'loading';
+  pauseBtn.textContent = s === 'paused' ? '▶ Resume' : '⏸ Pause';
+  if (s === 'playing') progLabel.textContent = 'Speaking…';
+  if (s === 'paused')  progLabel.textContent = 'Paused';
+  if (s === 'idle')    progLabel.textContent = 'Not playing';
 }
 
 // ── PROFILE ────────────────────────────────────────────────────
@@ -1229,6 +1263,24 @@ groqKeySave.addEventListener('click', () => {
   groqKeyInput.value = '';
   groqKeyInput.placeholder = '••••••••' + key.slice(-4);
   toast('✓ API key saved');
+  document.getElementById('settingsModal').classList.remove('open');
+});
+
+// ── ELEVENLABS KEY ─────────────────────────────────────────────
+const elevenKeyInput = document.getElementById('elevenKeyInput');
+const elevenKeySave  = document.getElementById('elevenKeySave');
+
+const savedElevenKey = localStorage.getItem('aura_elevenKey');
+if (savedElevenKey) elevenKeyInput.placeholder = '••••••••' + savedElevenKey.slice(-4);
+
+elevenKeySave.addEventListener('click', () => {
+  const key = elevenKeyInput.value.trim();
+  if (!key) { toast('Paste your ElevenLabs API key first'); return; }
+  localStorage.setItem('aura_elevenKey', key);
+  elevenKeyInput.value = '';
+  elevenKeyInput.placeholder = '••••••••' + key.slice(-4);
+  toast('✓ ElevenLabs key saved');
+  initVoices();
   document.getElementById('settingsModal').classList.remove('open');
 });
 
