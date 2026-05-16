@@ -885,7 +885,9 @@ document.getElementById('clearHistBtn').addEventListener('click',()=>{
 
 // ── RECORDING: Web Speech (live) → Groq Whisper fallback (iPhone) ──
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const useNative = !!SR; // true on Chrome/Android, false on iPhone Safari
+// iOS exposes webkitSpeechRecognition but it silently fails in PWA standalone mode
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const useNative = !!SR && !isIOS; // Groq Whisper on iOS, Web Speech everywhere else
 
 let mediaRecorder = null, audioChunks = [], mediaStream = null;
 let rec = useNative ? new SR() : null;
