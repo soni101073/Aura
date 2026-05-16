@@ -953,14 +953,24 @@ function getBestMime() {
 
 async function startGroqRec() {
   const apiKey = localStorage.getItem('aura_groqKey');
-  if (!apiKey) { toast('⚙️ Add your Groq API key in Settings first'); return; }
+  if (!apiKey) {
+    setStatus('Add Groq key in ⚙️ Settings', 'error');
+    toast('⚙️ Add your Groq API key in Settings first');
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus('Mic API unavailable — open in Safari first', 'error');
+    toast('Open in Safari once to grant mic permission, then use home screen');
+    return;
+  }
 
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch(err) {
-    const msg = err.name === 'NotAllowedError' ? 'Mic permission denied — allow in browser settings'
+    const msg = err.name === 'NotAllowedError' ? 'Mic permission denied — check iPhone Settings'
               : err.name === 'NotFoundError'   ? 'No microphone found'
-              : 'Microphone error';
+              : 'Mic error: ' + err.name;
     setStatus(msg, 'error'); toast(msg); return;
   }
 
