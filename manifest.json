@@ -1,0 +1,10 @@
+{
+  "name": "Aura Voice Transcriber",
+  "short_name": "Aura",
+  "description": "Record, transcribe, and play back voice using Groq AI",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "orientation": "portrait-primary"
+}
