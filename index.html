@@ -1118,7 +1118,11 @@ async function initVoices() {
     const res = await fetch('https://api.elevenlabs.io/v1/voices', {
       headers: { 'xi-api-key': apiKey }
     });
-    if (!res.ok) throw new Error('Invalid API key');
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j.detail?.message || j.detail || msg; } catch {}
+      throw new Error(msg);
+    }
     const data = await res.json();
     elVoices = data.voices.slice(0, 8);
     selVoiceId = elVoices[0]?.voice_id || '';
