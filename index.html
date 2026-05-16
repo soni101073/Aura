@@ -947,11 +947,15 @@ if (rec) {
   };
 }
 
-// ── Groq Whisper (iPhone / Safari — batch after stop) ──────────
+// ── Groq Whisper (iPhone / Safari — chunked live preview) ──────
+const CHUNK_INTERVAL = 6000; // send to Groq every 6s while recording
+
 function getBestMime() {
   return ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
+
+let chunkTimer = null, isChunkStop = false, sessionText = '';
 
 async function startGroqRec() {
   const apiKey = localStorage.getItem('aura_groqKey');
@@ -960,13 +964,11 @@ async function startGroqRec() {
     toast('⚙️ Add your Groq API key in Settings first');
     return;
   }
-
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     setStatus('Mic API unavailable — open in Safari first', 'error');
     toast('Open in Safari once to grant mic permission, then use home screen');
     return;
   }
-
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch(err) {
@@ -976,14 +978,7 @@ async function startGroqRec() {
     setStatus(msg, 'error'); toast(msg); return;
   }
 
-  const mime = getBestMime();
-  try { mediaRecorder = new MediaRecorder(mediaStream, mime ? { mimeType: mime } : {}); }
-  catch(e) { mediaRecorder = new MediaRecorder(mediaStream); }
-  audioChunks = [];
-
-  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
-  mediaRecorder.onstop = transcribeAudio;
-  mediaRecorder.start(250);
+  sessionText = '';
   isListening = true;
   recSecs = 0;
 
@@ -997,16 +992,43 @@ async function startGroqRec() {
     const m = Math.floor(recSecs / 60), s = String(recSecs % 60).padStart(2, '0');
     setStatus(`Recording ${m}:${s}`, 'listening');
   }, 1000);
+
+  startMediaChunk();
+
+  // every 6s stop current chunk → transcribe → restart
+  chunkTimer = setInterval(() => {
+    if (isListening && mediaRecorder && mediaRecorder.state === 'recording') {
+      isChunkStop = true;
+      mediaRecorder.stop();
+    }
+  }, CHUNK_INTERVAL);
 }
 
-async function transcribeAudio() {
-  const apiKey = localStorage.getItem('aura_groqKey');
-  if (!apiKey || !audioChunks.length) { setStatus('No audio recorded', 'error'); return; }
+function startMediaChunk() {
+  const mime = getBestMime();
+  try { mediaRecorder = new MediaRecorder(mediaStream, mime ? { mimeType: mime } : {}); }
+  catch(e) { mediaRecorder = new MediaRecorder(mediaStream); }
+  audioChunks = [];
+  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onstop = async () => {
+    const wasChunk = isChunkStop;
+    isChunkStop = false;
+    await transcribeAudio(wasChunk);
+    if (wasChunk && isListening) startMediaChunk();
+  };
+  mediaRecorder.start(250);
+}
 
+async function transcribeAudio(isInterim = false) {
+  const apiKey = localStorage.getItem('aura_groqKey');
+  if (!apiKey || !audioChunks.length) {
+    if (!isInterim) setStatus('No audio recorded', 'error');
+    return;
+  }
   const mime = mediaRecorder?.mimeType || 'audio/webm';
   const ext  = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
   const blob = new Blob(audioChunks, { type: mime });
-  if (blob.size < 500) { setStatus('Recording too short', 'error'); return; }
+  if (blob.size < 500) return;
 
   const lang = langSel.value.split('-')[0];
   const form = new FormData();
@@ -1027,16 +1049,22 @@ async function transcribeAudio() {
       throw new Error(errMsg);
     }
     const data = await res.json();
-    finalText = (data.text || '').trim();
-    if (!finalText) { setStatus('Nothing detected — try again', 'error'); return; }
+    const chunk = (data.text || '').trim();
+    if (!chunk) return;
+
+    sessionText += (sessionText ? ' ' : '') + chunk;
+    finalText = sessionText;
     tBody.innerHTML = `<span class="final">${esc(finalText)}</span>`;
+    tBody.scrollTop = tBody.scrollHeight;
     updateWC();
-    setStatus('✓ Done', 'success');
-    if (prefs.autoSave) { pushHistory(finalText, langSel.value); toast('✓ Transcribed & saved'); }
-    else { toast('✓ Transcribed'); }
+
+    if (!isInterim) {
+      setStatus('✓ Done', 'success');
+      if (prefs.autoSave && finalText) { pushHistory(finalText, langSel.value); toast('✓ Transcribed & saved'); }
+      else if (finalText) { toast('✓ Transcribed'); }
+    }
   } catch(err) {
-    setStatus('Error — check API key', 'error');
-    toast('⚠️ ' + err.message.slice(0, 80));
+    if (!isInterim) { setStatus('Error — check API key', 'error'); toast('⚠️ ' + err.message.slice(0, 80)); }
   }
 }
 
@@ -1059,6 +1087,9 @@ function stopRec() {
     rec.stop();
   } else {
     clearInterval(recTimer);
+    clearInterval(chunkTimer);
+    chunkTimer = null;
+    isChunkStop = false;
     isListening = false;
     try { mediaRecorder.stop(); } catch(e) {}
     mediaStream?.getTracks().forEach(t => t.stop());
