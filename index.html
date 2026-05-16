@@ -872,8 +872,12 @@ document.getElementById('clearHistBtn').addEventListener('click',()=>{
   saveHistory([]); renderHistory(); toast('History cleared');
 });
 
-// ── GROQ WHISPER RECORDING ─────────────────────────────────────
+// ── RECORDING: Web Speech (live) → Groq Whisper fallback (iPhone) ──
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const useNative = !!SR; // true on Chrome/Android, false on iPhone Safari
+
 let mediaRecorder = null, audioChunks = [], mediaStream = null;
+let rec = useNative ? new SR() : null;
 let isListening = false, finalText = '', recTimer = null, recSecs = 0;
 
 const micBtn   = document.getElementById('micBtn');
@@ -890,14 +894,53 @@ const wcEl     = document.getElementById('wordCount');
 const MIC_SVG  = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none"><rect x="9" y="2" width="6" height="11" rx="3" fill="white"/><path d="M5 11a7 7 0 0 0 14 0" stroke="white" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="18" x2="12" y2="22" stroke="white" stroke-width="2" stroke-linecap="round"/><line x1="8" y1="22" x2="16" y2="22" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>`;
 const STOP_SVG = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="2" fill="white"/></svg>`;
 
+// ── Native Web Speech (Chrome / Android — live preview) ────────
+if (rec) {
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = 'en-US';
+  langSel.addEventListener('change', e => { if (rec) rec.lang = e.target.value; });
+
+  rec.onstart = () => {
+    vizEl.classList.add('active'); ringEl.classList.add('pulsing');
+    micBtn.classList.add('recording'); micBtn.innerHTML = STOP_SVG;
+    stopBtn.disabled = false;
+    setStatus('Listening…', 'listening');
+  };
+  rec.onresult = ev => {
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript;
+      ev.results[i].isFinal ? (finalText += t + ' ') : (interim += t);
+    }
+    tBody.innerHTML = `<span class="final">${esc(finalText)}</span>` +
+                      (interim ? `<span class="interim">${esc(interim)}</span>` : '');
+    tBody.scrollTop = tBody.scrollHeight;
+    updateWC();
+  };
+  rec.onerror = ev => {
+    if (ev.error === 'no-speech') return;
+    setStatus(ev.error === 'not-allowed' ? 'Mic permission denied' : 'Error: ' + ev.error, 'error');
+    resetRecUI(); isListening = false;
+  };
+  rec.onend = () => {
+    if (isListening) { try { rec.start(); return; } catch(e) {} }
+    isListening = false; resetRecUI();
+    const saved = finalText.trim();
+    if (saved) {
+      setStatus('✓ Done', 'success');
+      if (prefs.autoSave) { pushHistory(saved, langSel.value); toast('✓ Saved to History'); }
+    } else { setStatus('Tap mic to start', ''); }
+  };
+}
+
+// ── Groq Whisper (iPhone / Safari — batch after stop) ──────────
 function getBestMime() {
   return ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
 
-async function startRec() {
-  if (isListening) return;
-
+async function startGroqRec() {
   const apiKey = localStorage.getItem('aura_groqKey');
   if (!apiKey) { toast('⚙️ Add your Groq API key in Settings first'); return; }
 
@@ -907,16 +950,12 @@ async function startRec() {
     const msg = err.name === 'NotAllowedError' ? 'Mic permission denied — allow in browser settings'
               : err.name === 'NotFoundError'   ? 'No microphone found'
               : 'Microphone error';
-    setStatus(msg, 'error'); toast(msg);
-    return;
+    setStatus(msg, 'error'); toast(msg); return;
   }
 
   const mime = getBestMime();
-  try {
-    mediaRecorder = new MediaRecorder(mediaStream, mime ? { mimeType: mime } : {});
-  } catch(e) {
-    mediaRecorder = new MediaRecorder(mediaStream);
-  }
+  try { mediaRecorder = new MediaRecorder(mediaStream, mime ? { mimeType: mime } : {}); }
+  catch(e) { mediaRecorder = new MediaRecorder(mediaStream); }
   audioChunks = [];
 
   mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
@@ -925,30 +964,16 @@ async function startRec() {
   isListening = true;
   recSecs = 0;
 
-  vizEl.classList.add('active');
-  ringEl.classList.add('pulsing');
-  micBtn.classList.add('recording');
-  micBtn.innerHTML = STOP_SVG;
+  vizEl.classList.add('active'); ringEl.classList.add('pulsing');
+  micBtn.classList.add('recording'); micBtn.innerHTML = STOP_SVG;
   stopBtn.disabled = false;
   setStatus('Recording 0:00', 'listening');
 
   recTimer = setInterval(() => {
     recSecs++;
-    const m = Math.floor(recSecs / 60);
-    const s = String(recSecs % 60).padStart(2, '0');
+    const m = Math.floor(recSecs / 60), s = String(recSecs % 60).padStart(2, '0');
     setStatus(`Recording ${m}:${s}`, 'listening');
   }, 1000);
-}
-
-function stopRec() {
-  if (!isListening) return;
-  clearInterval(recTimer);
-  isListening = false;
-  try { mediaRecorder.stop(); } catch(e) {}
-  mediaStream?.getTracks().forEach(t => t.stop());
-  mediaStream = null;
-  resetRecUI();
-  setStatus('Transcribing…', 'listening');
 }
 
 async function transcribeAudio() {
@@ -958,7 +983,6 @@ async function transcribeAudio() {
   const mime = mediaRecorder?.mimeType || 'audio/webm';
   const ext  = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
   const blob = new Blob(audioChunks, { type: mime });
-
   if (blob.size < 500) { setStatus('Recording too short', 'error'); return; }
 
   const lang = langSel.value.split('-')[0];
@@ -974,31 +998,50 @@ async function transcribeAudio() {
       headers: { 'Authorization': `Bearer ${apiKey}` },
       body: form
     });
-
     if (!res.ok) {
       let errMsg = `HTTP ${res.status}`;
       try { const j = await res.json(); errMsg = j.error?.message || errMsg; } catch {}
       throw new Error(errMsg);
     }
-
     const data = await res.json();
     finalText = (data.text || '').trim();
-
     if (!finalText) { setStatus('Nothing detected — try again', 'error'); return; }
-
     tBody.innerHTML = `<span class="final">${esc(finalText)}</span>`;
     updateWC();
     setStatus('✓ Done', 'success');
-    if (prefs.autoSave) {
-      pushHistory(finalText, langSel.value);
-      toast('✓ Transcribed & saved');
-    } else {
-      toast('✓ Transcribed');
-    }
+    if (prefs.autoSave) { pushHistory(finalText, langSel.value); toast('✓ Transcribed & saved'); }
+    else { toast('✓ Transcribed'); }
   } catch(err) {
-    const msg = err.message.slice(0, 80);
     setStatus('Error — check API key', 'error');
-    toast('⚠️ ' + msg);
+    toast('⚠️ ' + err.message.slice(0, 80));
+  }
+}
+
+// ── Unified start / stop ───────────────────────────────────────
+async function startRec() {
+  if (isListening) return;
+  finalText = ''; tBody.innerHTML = ''; updateWC();
+  if (useNative) {
+    try { rec.continuous = true; rec.interimResults = prefs.interim; rec.start(); isListening = true; }
+    catch(e) { setStatus('Could not start microphone', 'error'); }
+  } else {
+    await startGroqRec();
+  }
+}
+
+function stopRec() {
+  if (!isListening) return;
+  if (useNative) {
+    isListening = false;
+    rec.stop();
+  } else {
+    clearInterval(recTimer);
+    isListening = false;
+    try { mediaRecorder.stop(); } catch(e) {}
+    mediaStream?.getTracks().forEach(t => t.stop());
+    mediaStream = null;
+    resetRecUI();
+    setStatus('Transcribing…', 'listening');
   }
 }
 
